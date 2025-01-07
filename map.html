@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>Weather Thingy - Group 4</title>
+    <link rel="icon" href="images/icon.ico">
+    <!-- Load TomTom resources with defer -->
+    <link rel="stylesheet" type="text/css"
+        href="https://api.tomtom.com/maps-sdk-for-web/cdn/6.x/6.25.0/maps/maps.css" />
+    <script src="https://api.tomtom.com/maps-sdk-for-web/cdn/6.x/6.25.0/maps/maps-web.min.js"></script>
+    <link rel="stylesheet" href="css/style.css">
+    <!-- https://developer.tomtom.com/blog/build-different/add-tomtom-maps-website-30-seconds/ -->
+</head>
+
+<body>
+    <header>
+        <nav class="nav-container">
+            <div class="nav-content">
+                <h1>Weather Monitoring System</h1>
+                <div class="nav-links">
+                    <a href="index.html" class="nav-link">Home</a>
+                    <a href="detail.html" class="nav-link">Details</a>
+                    <a href="map.html" class="nav-link active">Map</a>
+                    <a href="about.html" class="nav-link">About</a>
+                </div>
+                <div class="status-indicators">
+                    <div id="loadingIndicator" class="loading-spinner hidden"></div>
+                    <span class="last-update" id="lastUpdated"></span>
+                </div>
+            </div>
+        </nav>
+    </header>
+
+    <main class="container">
+        <div id="map" aria-label="Interactive map of Enschede"></div>
+        <div id="error-message" class="error-message hidden"></div>
+    </main>
+
+    <footer class="footer">
+        <div class="footer-content">
+            <p>&copy; 2024 Weather Monitoring System. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script type="module">
+        'use strict';
+
+        // Constants
+        const ENSCHEDE_COORDINATES = {
+            lng: 6.8937,
+            lat: 52.2215
+        };
+
+        // Config should be in a separate config file in production
+        const CONFIG = {
+            API_URL: 'http://84.85.32.192:7086/api/Most_Recent?page=1&page_size=50',    
+            REFRESH_INTERVAL: 5 * 60 * 1000, // 5 minutes in milliseconds
+            API_KEY: 'R9fdHcaZHmIvYs76MGqaRMRMl3cGGxhc', // Better to use environment variable
+            zoom: 12
+        };
+
+
+        // Fetch data from API
+        const fetchData = async () => {
+            const response = await fetch(CONFIG.API_URL);
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const result = await response.json();
+            return result.data;
+        };
+
+        // Map controller
+        class MapController {
+            constructor() {
+                this.map = null;
+                this.markers = new Map(); // Store markers with unique IDs
+                this.loadingIndicator = document.getElementById('loadingIndicator');
+                this.errorMessage = document.getElementById('error-message');
+            }
+
+            async initialize() {
+                try {
+                    this.showLoading();
+
+                    this.map = tt.map({
+                        key: CONFIG.API_KEY,
+                        container: 'map',
+                        center: [ENSCHEDE_COORDINATES.lng, ENSCHEDE_COORDINATES.lat],
+                        zoom: CONFIG.zoom,
+                        workerUrl: 'https://api.tomtom.com/maps-sdk-for-web/cdn/6.x/6.16.0/maps/worker.js'
+                    });
+
+                    // Add controls
+                    this.map.addControl(new tt.NavigationControl());
+
+                    // Add event listeners
+                    this.map.on('load', () => this.onMapLoaded());
+                    this.map.on('error', (error) => this.handleError(error));
+
+                    this.updateTimestamp();
+                    this.startPeriodicUpdates();
+                } catch (error) {
+                    this.handleError(error);
+                }
+            }
+
+            showLoading() {
+                this.loadingIndicator.classList.remove('hidden');
+            }
+
+            hideLoading() {
+                this.loadingIndicator.classList.add('hidden');
+            }
+
+            handleError(error) {
+                console.error('Map error:', error);
+                this.errorMessage.textContent = 'An error occurred while loading the map';
+                this.errorMessage.classList.remove('hidden');
+                this.hideLoading();
+            }
+
+            onMapLoaded() {
+                this.hideLoading();
+                this.updateTimestamp();
+            }
+
+            updateTimestamp() {
+                const timestamp = new Intl.DateTimeFormat('default', {
+                    dateStyle: 'medium',
+                    timeStyle: 'medium'
+                }).format(new Date());
+
+                document.getElementById('lastUpdated').textContent = `Last updated: ${new Date().toLocaleString()}`;
+            }
+
+            startPeriodicUpdates() {
+                // Update timestamp every minute
+                setInterval(() => this.updateTimestamp(), 60000);
+            }
+
+            /**
+             * Add a marker to the map
+             * @param {Object} location - Location object
+             * @param {number} location.lat - Latitude
+             * @param {number} location.lng - Longitude
+             * @param {string} location.id - Unique identifier for the marker
+             * @param {string} location.title - Title for the popup
+             * @param {string} location.description - Description for the popup
+             * @param {string} location.type - Type of the marker (gateway or device)
+             */
+            addMarker({ lat, lng, id, title, description, type }) {
+                // Create marker element
+                const markerElement = document.createElement('div');
+                markerElement.className = `marker ${type}`; // Add type class (gateway or device)
+
+                // Create and add the marker
+                const marker = new tt.Marker({ element: markerElement })
+                    .setLngLat([lng, lat])
+                    .addTo(this.map);
+
+                // Add popup if title or description exists
+                if (title || description) {
+                    const popup = new tt.Popup({ offset: 30 }).setHTML(`
+                        <p>${description || ''}</p>
+                    `);
+                    marker.setPopup(popup);
+                }
+
+                // Store marker reference
+                this.markers.set(id, marker);
+
+                return marker;
+            }
+
+            /**
+             * Remove a marker from the map
+             * @param {string} id - Marker identifier
+             */
+            removeMarker(id) {
+                const marker = this.markers.get(id);
+                if (marker) {
+                    marker.remove();
+                    this.markers.delete(id);
+                }
+            }
+
+            /**
+             * Update marker position
+             * @param {string} id - Marker identifier
+             * @param {number} lat - New latitude
+             * @param {number} lng - New longitude
+             */
+            updateMarkerPosition(id, lat, lng) {
+                const marker = this.markers.get(id);
+                if (marker) {
+                    marker.setLngLat([lng, lat]);
+                }
+            }
+
+            /**
+             * Center map on a specific location
+             * @param {number} lat - Latitude
+             * @param {number} lng - Longitude
+             * @param {number} zoom - Zoom level (optional)
+             */
+            centerOn(lat, lng, zoom) {
+                this.map.flyTo({
+                    center: [lng, lat],
+                    zoom: zoom || CONFIG.zoom
+                });
+            }
+
+            createMarker(data) {
+                const el = document.createElement('div');
+                el.className = `marker ${data.type || 'device'}`;
+                
+                // Create the marker
+                const marker = new tt.Marker({
+                    element: el,
+                    anchor: 'center'
+                })
+                .setLngLat([data.longitude, data.latitude]);
+
+                // Add click handler
+                marker.getElement().addEventListener('click', () => {
+                    // Remove active class from all markers
+                    document.querySelectorAll('.marker').forEach(m => m.classList.remove('active'));
+                    // Add active class to clicked marker
+                    el.classList.add('active');
+                    
+                    // Create and show popup
+                    const popup = this.createPopup(data);
+                    marker.setPopup(popup);
+                    popup.addTo(this.map);
+                });
+
+                // Remove active class when popup is closed
+                marker.getElement().addEventListener('popupclose', () => {
+                    el.classList.remove('active');
+                });
+
+                return marker;
+            }
+        }
+
+        // Initialize map when DOM is loaded
+        document.addEventListener('DOMContentLoaded', async () => {
+            const mapController = new MapController();
+            
+            const updateMapData = async () => {
+                try {
+                    const currentData = await fetchData();
+                    // console.log('Fetched data:', currentData);
+
+                    // Clear existing markers
+                    mapController.markers.forEach((marker, id) => {
+                        mapController.removeMarker(id);
+                    });
+
+                    // Only proceed if we have data
+                    if (Array.isArray(currentData)) {
+                        // Define gateways from the data
+                        const gateways = currentData.map(item => ({
+                            lat: parseFloat(item.lat) || 0,
+                            lng: parseFloat(item.lng) || 0,
+                            alt: parseFloat(item.alt) || 0,
+                            gateway_id: item.gateway_id,
+                            node_id: item.node_id,
+                            time: item.time,
+                            temperature_indoor: item.temperature_indoor,
+                            temperature_outdoor: item.temperature_outdoor,
+                            humidity: item.humidity,
+                            pressure: item.pressure,
+                            illumination: item.illumination,
+                            type: 'gateway'
+                        }));
+
+                        // Group markers by location
+                        const groupedMarkers = new Map();
+                        gateways.forEach(gateway => {
+                            const key = `${gateway.lat},${gateway.lng}`;
+                            if (!groupedMarkers.has(key)) {
+                                groupedMarkers.set(key, []);
+                            }
+                            groupedMarkers.get(key).push(gateway);
+                        });
+
+                        // Add markers with combined popups if overlapping
+                        groupedMarkers.forEach((markersAtLocation, location) => {
+                            try {
+                                // console.log(markersAtLocation);
+                                const markerInfo = {
+                                    lat: markersAtLocation[0].lat,
+                                    lng: markersAtLocation[0].lng,
+                                    id: markersAtLocation[0].gateway_id,
+                                    type: 'gateway',
+                                    title: markersAtLocation.length > 1 ?
+                                        `Gateway - ${markersAtLocation[0].gateway_id} | Sensors (${markersAtLocation.length})` :
+                                        `Gateway - ${markersAtLocation[0].gateway_id}`,
+                                    description: createPopupContent(markersAtLocation)
+                                };
+                                mapController.addMarker(markerInfo);
+                            } catch (error) {
+                                console.warn(`Failed to add markers at location ${location}:`, error);
+                            }
+                        });
+
+                        // Center map on first gateway or default location
+                        const enschedeGateway = gateways[2];
+                        if (enschedeGateway) {
+                            mapController.centerOn(enschedeGateway.lat, enschedeGateway.lng, 9);
+                        }
+                    }
+                    
+                    mapController.updateTimestamp();
+                } catch (error) {
+                    console.error('Failed to update map data:', error);
+                    document.getElementById('error-message').textContent = 'Failed to refresh map data';
+                    document.getElementById('error-message').classList.remove('hidden');
+                }
+            };
+
+            const initializeAndUpdate = async () => {
+                try {
+                    await mapController.initialize();
+                    await updateMapData(); // Initial data load
+                } catch (error) {
+                    console.error('Failed to initialize map:', error);
+                    document.getElementById('error-message').textContent = 'Failed to load map';
+                    document.getElementById('error-message').classList.remove('hidden');
+                }
+            };
+
+            // Initial setup
+            await initializeAndUpdate();
+            
+            // Set up periodic complete reload
+            setInterval(() => {
+                // Remove the existing map
+                if (mapController.map) {
+                    mapController.map.remove();
+                }
+                // Reinitialize the map
+                initializeAndUpdate();
+            }, CONFIG.REFRESH_INTERVAL);
+        });
+
+        const createPopupContent = (gateways) => `
+            <div class="popup-container">
+                <div class="popup-header">
+                    <h3>${gateways.length > 1 ? `Gateway - ${gateways[0].gateway_id} <br> Number of sensors: (${gateways.length})` : `Gateway - ${gateways[0].gateway_id}`}</h3>
+                </div>
+                <div class="popup-content">
+                    ${gateways.map(gateway => createGatewayInfo(gateway)).join('')}
+                </div>
+            </div>
+        `;
+
+        // Calculate human-readable time difference
+        const getTimeAgo = (date) => {
+            const diff = Math.floor((new Date() - new Date(date)) / 1000);
+            
+            // Define time intervals in descending order
+            const intervals = {
+                year:   31536000,
+                month:  2592000,
+                day:    86400,
+                hour:   3600,
+                minute: 60,
+                second: 1
+            };
+
+            // Find the largest applicable time unit
+            for (const [unit, seconds] of Object.entries(intervals)) {
+                const count = Math.floor(diff / seconds);
+                
+                if (count >= 1) {
+                    // Handle plural/singular forms
+                    return `${count} ${unit}${count !== 1 ? 's' : ''} ago`;
+                }
+            }
+
+            return 'just now'; // Fallback for very recent times
+        };
+
+        const createGatewayInfo = (gateway) => `
+            <div class="gateway-info">
+                <div class="data-row">
+                    <span class="data-label">Node ID:</span>
+                    <span class="data-value">${gateway.node_id}</span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label">Last Update:</span>
+                    <span class="data-value">${getTimeAgo(gateway.time)}</span>
+                </div>
+                ${gateway.temperature_indoor ? `
+                    <div class="data-row" data-type="temperature">
+                        <span class="data-label">Temperature Indoor:</span>
+                        <span class="data-value">${gateway.temperature_indoor}°C</span>
+                    </div>
+                ` : ''}
+                ${gateway.temperature_outdoor ? `
+                    <div class="data-row" data-type="temperature">
+                        <span class="data-label">Temperature Outdoor:</span>
+                        <span class="data-value">${gateway.temperature_outdoor}°C</span>
+                    </div>
+                ` : ''}
+                ${gateway.humidity ? `
+                    <div class="data-row" data-type="humidity">
+                        <span class="data-label">Humidity:</span>
+                        <span class="data-value">${gateway.humidity}%</span>
+                    </div>
+                ` : ''}
+                ${gateway.pressure ? `
+                    <div class="data-row" data-type="pressure">
+                        <span class="data-label">Pressure:</span>
+                        <span class="data-value">${gateway.pressure} hPa</span>
+                    </div>
+                ` : ''}
+                ${gateway.illumination ? `
+                    <div class="data-row" data-type="illumination">
+                        <span class="data-label">Illumination:</span>
+                        <span class="data-value">${gateway.illumination}%</span>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    </script>
+</body>
+
+</html>
